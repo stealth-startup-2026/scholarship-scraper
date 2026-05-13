@@ -373,6 +373,7 @@ The extractor is uni-agnostic. The system prompt is anti-hallucination; only wha
 Generate once, hardcode in the scraper as `SOURCE_ID`. Add an entry in this doc so the next session doesn't pick a conflicting one. Existing assignments:
 
 - UNSW: `c2d4e6f8-1a3b-5c7d-9e0f-2b4c6d8e0f1a`
+- USyd: `b5e8c3a1-7d4f-4e2a-9b1c-6f3a8d5b2c7e`
 - UniMelb: see `caat-frontend/supabase/seeds/scholarships_unimelb.sql`
 
 ### 7. Verify the `schools` row exists
