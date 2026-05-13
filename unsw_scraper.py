@@ -62,16 +62,29 @@ def parse_date(raw: str) -> str | None:
     return None
 
 
+_NON_INFORMATIVE_AMOUNTS = {
+    "not specified", "n/a", "na", "tba", "to be advised",
+    "to be confirmed", "varies", "refer to handbook", "see details",
+}
+
+
 def parse_amount(raw: str) -> tuple[float | None, str | None]:
-    """Return (numeric_value, display_string) from raw amount text."""
+    """Return (numeric_value, display_string) from raw amount text.
+
+    Drops non-informative placeholders ('Not specified', 'TBA', etc.) so the
+    card UI doesn't render them as a headline. Preserves real non-dollar
+    strings like 'Fully Funded' or 'Tuition + Stipend'.
+    """
     if not raw:
         return None, None
-    # e.g. "$15,000 available for up to 2 years" or "$30,000 available for 1 year"
     match = re.search(r'\$([0-9,]+)', raw)
     if match:
         numeric = float(match.group(1).replace(",", ""))
         return numeric, raw.strip()
-    return None, raw.strip() or None
+    norm = raw.strip().lower()
+    if not norm or norm in _NON_INFORMATIVE_AMOUNTS:
+        return None, None
+    return None, raw.strip()
 
 
 def infer_study_level(education_text: str, title: str = "") -> list:
