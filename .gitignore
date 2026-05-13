@@ -3,6 +3,7 @@
 __pycache__/
 *.pyc
 australia/cache/
+australia/*.csv
 .env
 .env.*
 !.env.example
