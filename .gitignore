@@ -2,3 +2,7 @@
 .claude/
 __pycache__/
 *.pyc
+australia/cache/
+.env
+.env.*
+!.env.example
