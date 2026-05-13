@@ -249,7 +249,7 @@ def extract_requirements(eligibility: str, application: str = "") -> dict | None
               file=sys.stderr)
         return None
 
-    client = anthropic.Anthropic(api_key=API_KEY, base_url=BASE_URL)
+    client = anthropic.Anthropic(api_key=API_KEY, base_url=BASE_URL, timeout=60.0, max_retries=2)
 
     try:
         response = client.messages.create(
@@ -345,7 +345,7 @@ def split_bundle(
               file=sys.stderr)
         return None
 
-    client = anthropic.Anthropic(api_key=API_KEY, base_url=BASE_URL)
+    client = anthropic.Anthropic(api_key=API_KEY, base_url=BASE_URL, timeout=60.0, max_retries=2)
 
     try:
         response = client.messages.create(
@@ -494,7 +494,7 @@ def verify_row(row: dict, siblings: list[dict]) -> dict | None:
         print("  verifier: no SDK or API key; skipping", file=sys.stderr)
         return None
 
-    client = anthropic.Anthropic(api_key=API_KEY, base_url=BASE_URL)
+    client = anthropic.Anthropic(api_key=API_KEY, base_url=BASE_URL, timeout=60.0, max_retries=2)
     try:
         response = client.messages.create(
             model=MODEL,
@@ -608,7 +608,7 @@ def classify_page(
         print("  classifier: no SDK or API key; defaulting to single", file=sys.stderr)
         return None
 
-    client = anthropic.Anthropic(api_key=API_KEY, base_url=BASE_URL)
+    client = anthropic.Anthropic(api_key=API_KEY, base_url=BASE_URL, timeout=60.0, max_retries=2)
     try:
         response = client.messages.create(
             model=MODEL,

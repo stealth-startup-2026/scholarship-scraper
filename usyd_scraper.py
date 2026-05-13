@@ -80,12 +80,29 @@ def parse_amount(raw: str) -> tuple[float | None, str | None]:
     return None, raw.strip().splitlines()[0]
 
 
-def get_section_text(soup: BeautifulSoup, heading: str) -> str:
-    """USyd uses h2 section headings (Highlights, How to apply, Benefits,
-    Who's eligible, Background) followed by paragraphs/lists. Walk forward
-    until the next h2/h3, collecting visible text."""
+def _norm_heading(s: str) -> str:
+    """Normalize a heading for comparison: lowercase, strip apostrophes/punct,
+    collapse whitespace. So 'Who’s eligible' / 'Who is eligible' /
+    'Whos eligible' all compare equal."""
+    s = re.sub(r"[‘’']", "", s.lower())
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def get_section_text(soup: BeautifulSoup, headings: str | list[str]) -> str:
+    """USyd uses h2/h3 section headings followed by paragraphs/lists. Accepts
+    either a single heading or a list of acceptable variants — the first one
+    that matches wins. Walk forward until the next h2/h3, collecting text.
+
+    USyd templates vary: Eligibility is sometimes 'Who's eligible',
+    sometimes 'Who is eligible', sometimes 'Eligibility' or 'Requirements'.
+    Benefits is sometimes 'Benefits and duration'. Pass all variants."""
+    if isinstance(headings, str):
+        wanted = {_norm_heading(headings)}
+    else:
+        wanted = {_norm_heading(h) for h in headings}
+
     for h in soup.find_all(["h2", "h3"]):
-        if h.get_text(strip=True).lower() == heading.lower():
+        if _norm_heading(h.get_text(strip=True)) in wanted:
             parts: list[str] = []
             for sib in h.find_all_next(["p", "li", "h2", "h3"]):
                 if sib.name in ("h2", "h3") and sib is not h:
@@ -182,11 +199,13 @@ def scrape_scholarship(listing: dict) -> dict | None:
     h1 = soup.find("h1")
     title = h1.get_text(strip=True) if h1 else listing.get("title", "")
 
-    highlights = get_section_text(soup, "Highlights")
-    how_to_apply = get_section_text(soup, "How to apply")
-    benefits = get_section_text(soup, "Benefits")
-    eligibility = get_section_text(soup, "Who's eligible")
-    background = get_section_text(soup, "Background")
+    highlights = get_section_text(soup, ["Highlights"])
+    how_to_apply = get_section_text(soup, ["How to apply", "Application"])
+    benefits = get_section_text(soup, ["Benefits", "Benefits and duration", "Value", "Award value"])
+    eligibility = get_section_text(soup, [
+        "Who's eligible", "Who is eligible", "Eligibility", "Requirements", "Who can apply",
+    ])
+    background = get_section_text(soup, ["Background", "About", "About the scholarship"])
 
     raw_emails = [a["href"].replace("mailto:", "").strip()
                   for a in soup.find_all("a", href=re.compile(r"^mailto:", re.IGNORECASE))]
@@ -324,35 +343,71 @@ def scrape_scholarship(listing: dict) -> dict | None:
     return {"_sub_awards": sub_rows, "url": url, "parent_title": title}
 
 
+def _load_done_urls(path: str) -> set[str]:
+    """Return URLs already present in the output CSV. Used to skip them on
+    resume. Counts both single rows and sub-awards (sub-award external_url
+    is parent_url + '#fragment', so we split on '#')."""
+    done: set[str] = set()
+    if not os.path.exists(path):
+        return done
+    try:
+        with open(path) as f:
+            for r in csv.DictReader(f):
+                url = (r.get("external_url") or "").split("#", 1)[0]
+                if url:
+                    done.add(url)
+    except (OSError, csv.Error):
+        pass
+    return done
+
+
 def main():
     output_dir = "australia/usyd"
     os.makedirs(output_dir, exist_ok=True)
     output_path = f"{output_dir}/usyd_scholarships.csv"
     bundles_path = f"{output_dir}/usyd_bundled_pages.csv"
 
-    # CLI arg: optional limit for sample runs
+    # CLI args:
+    #   python3 usyd_scraper.py            -> full run, resuming from existing CSV
+    #   python3 usyd_scraper.py 5          -> sample run (first 5), fresh start
+    #   python3 usyd_scraper.py --restart  -> fresh full run, ignore existing CSV
     import sys
-    limit = int(sys.argv[1]) if len(sys.argv) > 1 else None
+    args = sys.argv[1:]
+    restart = "--restart" in args
+    args = [a for a in args if a != "--restart"]
+    limit = int(args[0]) if args else None
 
     print("Fetching scholarship listing JSON...")
     listings = get_scholarship_listings()
     if limit:
         listings = listings[:limit]
-        print(f"Limiting to first {limit} for sample run")
-    print(f"Processing {len(listings)} scholarships")
+        print(f"Limiting to first {limit}")
+
+    done_urls = set() if (restart or limit) else _load_done_urls(output_path)
+    if done_urls:
+        print(f"Resume: skipping {len(done_urls)} URLs already in {output_path}")
+
+    file_exists = os.path.exists(output_path) and not restart and not limit
+    mode = "a" if file_exists else "w"
 
     count = 0
     split_count = 0
     sub_rows_count = 0
     errors = 0
+    skipped_done = 0
     bundled: list[dict] = []
 
-    with open(output_path, "w", newline="", encoding="utf-8") as f:
+    with open(output_path, mode, newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=OUTPUT_FIELDNAMES)
-        writer.writeheader()
+        if not file_exists:
+            writer.writeheader()
 
         for i, listing in enumerate(listings, 1):
-            print(f"  [{i}/{len(listings)}] {listing.get('url','')}")
+            url = listing.get("url", "")
+            if url in done_urls:
+                skipped_done += 1
+                continue
+            print(f"  [{i}/{len(listings)}] {url}")
             row = scrape_scholarship(listing)
             if row is None:
                 errors += 1
@@ -361,22 +416,26 @@ def main():
             elif row.get("_sub_awards"):
                 for sub in row["_sub_awards"]:
                     writer.writerow(sub)
+                f.flush()
                 sub_rows_count += len(row["_sub_awards"])
                 split_count += 1
             else:
                 writer.writerow(row)
+                f.flush()
                 count += 1
             time.sleep(0.4)
 
-    with open(bundles_path, "w", newline="", encoding="utf-8") as f:
+    bundle_mode = "a" if (os.path.exists(bundles_path) and not restart and not limit) else "w"
+    with open(bundles_path, bundle_mode, newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=["url", "reason"])
-        writer.writeheader()
+        if bundle_mode == "w":
+            writer.writeheader()
         for b in bundled:
             writer.writerow({"url": b["url"], "reason": b["reason"]})
 
     print(f"\nDone — {count} single + {sub_rows_count} sub-awards from {split_count} "
           f"bundle pages saved to {output_path} "
-          f"({errors} errors, {len(bundled)} unsplittable pages logged to {bundles_path})")
+          f"({errors} errors, {len(bundled)} unsplittable, {skipped_done} skipped as already-done)")
 
 
 if __name__ == "__main__":
