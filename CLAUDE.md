@@ -401,6 +401,20 @@ Don't unleash the scraper on the full catalogue immediately. Hardcode 5 URLs of 
 
 If those check out, run the full scrape.
 
+### 9. After import: run the international-eligibility verification pass
+
+The scraper's `infer_citizenships()` heuristic catches ~15% of internationally-eligible scholarships in practice. Run the DeepSeek verification + SQL update pass to fix the rest:
+
+```sh
+python3 verify_international.py --csv australia/<uni>/<uni>_scholarships.csv
+python3 gen_citizenships_update_sql.py \
+  --csv australia/<uni>/deepseek_international_eligibility.csv \
+  --domestic-code <COUNTRY_CODE>  # AU / UK / US / etc.
+# Then run the generated SQL in Supabase.
+```
+
+Full details in the "Post-import: verify international eligibility with DeepSeek" section below. Without this step, the frontend's International filter will look badly under-populated.
+
 ---
 
 ## Per-CSV import workflow
@@ -499,6 +513,86 @@ ON CONFLICT DO NOTHING;
 ```
 
 If the school doesn't exist in `public.schools`, insert it first or this step inserts zero rows.
+
+---
+
+## Post-import: verify international eligibility with DeepSeek
+
+The scraper's `infer_citizenships()` heuristic is noisy — it only fires when the page's residency line uses specific phrasing. Empirically on UNSW it correctly tagged only ~7 of 47 internationally-eligible scholarships. Running a small LLM verification pass after import dramatically improves the `citizenships` data quality at almost no cost (~$0.05 for UNSW's 147 rows on `deepseek-chat`, ~$0.40 for USyd's 1000+).
+
+Three scripts in repo root cover the workflow:
+
+| Script | What |
+|---|---|
+| `verify_international.py` | Reads the scraper CSV, sends each row's `raw_payload.residency / criteria / eligibility / outline / selection` to DeepSeek with a single binary tool, writes `<uni>_deepseek_international_eligibility.csv` + a `_reasons.csv` debug log. Results are SHA-256 cached on disk so re-runs are free. |
+| `compare_international.py` | Diffs DeepSeek's verdict CSV against a manual baseline (Codex / human review). Computes precision/recall/F1 and lists per-row disagreements with DeepSeek's reasoning so you can spot-check. Optional — only useful when you have a baseline. |
+| `gen_citizenships_update_sql.py` | Generates an idempotent `UPDATE` SQL from the DeepSeek verdict CSV. **Two-statement output**: (1) toggles `'INTERNATIONAL'` in `citizenships` per the verdict, (2) stamps the domestic country code on any remaining empty rows so they don't accidentally match the International filter on the frontend. |
+
+### Workflow
+
+```sh
+# 1. Run DeepSeek over the scraped rows (~30-60s for ~150 rows)
+python3 verify_international.py --csv australia/usyd/usyd_scholarships.csv
+
+# 2. (Optional) compare against a human baseline if you have one
+python3 compare_international.py  # currently hardcoded for UNSW + Codex
+
+# 3. Generate the SQL update. --domestic-code is the school's country
+#    code (AU for Australian unis, UK for British, US for American, etc.)
+python3 gen_citizenships_update_sql.py \
+  --csv australia/usyd/deepseek_international_eligibility.csv \
+  --domestic-code AU
+# → writes australia/usyd/update_citizenships.sql
+
+# 4. Apply in Supabase SQL Editor
+cat australia/usyd/update_citizenships.sql | pbcopy
+# Paste + Run. Expected: UPDATE N twice.
+```
+
+### What the SQL does
+
+Two statements, both idempotent, both safe to re-run:
+
+```sql
+-- Step 1: toggle 'INTERNATIONAL' per the verdict, preserving any
+-- existing AU / AU-PR / other codes.
+with verdicts(id, is_international) as ( values (...), ... )
+update public.scholarships s
+set citizenships = case
+  when v.is_international and not (s.citizenships ? 'INTERNATIONAL')
+    then s.citizenships || '["INTERNATIONAL"]'::jsonb
+  when not v.is_international and (s.citizenships ? 'INTERNATIONAL')
+    then s.citizenships - 'INTERNATIONAL'
+  else s.citizenships
+end
+from verdicts v where v.id = s.id;
+
+-- Step 2: any row DeepSeek marked false that still has citizenships = []
+-- gets stamped with the school's country code. Empty arrays would
+-- otherwise match the International filter on the frontend (which treats
+-- [] as 'open to all').
+update public.scholarships s
+set citizenships = '["AU"]'::jsonb  -- ← from --domestic-code
+from ( values (...), ... ) as v(id, is_international)
+where v.id = s.id and not v.is_international and s.citizenships = '[]'::jsonb;
+```
+
+### Schema gotcha: jsonb vs text[]
+
+The `citizenships` column was originally declared as `text[]` in the migration, but when Supabase Table Editor imports a CSV with JSON-encoded array strings (`["AU"]`), it auto-detects and creates the column as **`jsonb`** instead. The generated SQL uses jsonb operators (`?`, `||`, `-`) accordingly.
+
+If you ever normalise to true `text[]`, the SQL generator needs `array` ops (`= any`, `array_append`, `array_remove`) — swap in `gen_citizenships_update_sql.py`'s template.
+
+The frontend's `citizenshipsOf(s)` helper (`caat-frontend/app/(main)/scholarships/client.tsx`) reads both shapes correctly via Supabase JS — no client change needed.
+
+### When to re-run
+
+- After every fresh scrape of a uni (re-import → re-verify → re-update). The cache makes re-runs ~free.
+- After tightening the verifier prompt (clear `australia/cache/international/` to bust the cache).
+
+### Cost
+
+DeepSeek `deepseek-chat` at ~$0.27/M input tokens. ~1500 input tokens per call. So **~$0.0004/scholarship**. UNSW (147) ≈ $0.06; USyd (1000+) ≈ $0.40. Compared to ~$1-2 with Codex/Claude-Opus.
 
 ---
 
