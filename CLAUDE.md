@@ -48,7 +48,11 @@ application_requirements, contact_info, raw_payload, created_at, updated_at
 
 ### Columns NOT in the DB schema (do not include)
 
-- `citizenships` — not part of `public.scholarships`. Strip from CSV before import.
+*(All scraper columns now map to a real DB column. Previously
+`citizenships` was stripped, but it was added to `public.scholarships`
+as `text[]` in migration `20260516120000_add_citizenships_to_scholarships.sql`
+to power the frontend's Domestic / International filter — the scraper's
+existing writes flow through unchanged.)*
 
 ### `application_requirements` shape — caveats
 
