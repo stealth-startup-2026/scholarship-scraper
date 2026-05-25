@@ -18,9 +18,13 @@ try:
 except ImportError:
     anthropic = None  # type: ignore[assignment]
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from requirements_extractor import API_KEY, BASE_URL, MODEL  # noqa: F401
 
-CACHE_DIR = Path(__file__).parent / "australia" / "cache" / "amount_summary_simple"
+CACHE_DIR = REPO_ROOT / "australia" / "cache" / "amount_summary_simple"
 
 SYSTEM_PROMPT = (
     "You compress a scholarship amount blurb into a short card headline. "

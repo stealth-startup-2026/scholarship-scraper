@@ -2,7 +2,7 @@
 """
 Build a clean (id, title, amount_display) CSV for summarize_amounts.py by
 pulling the FULL benefits text from raw_payload, bypassing the scraper's
-historical 120-char truncation in parse_amount() (usyd_scraper.py:74).
+historical 120-char truncation in parse_amount() (usyd/usyd_scraper.py).
 
 277 of USyd's 1059 rows currently store amount_display truncated at 117 +
 '...', which is too lossy for the DeepSeek summariser to work cleanly on.

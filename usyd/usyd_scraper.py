@@ -17,15 +17,25 @@ import csv
 import json
 import os
 import re
+import sys
 import time
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
 import requests
 from bs4 import BeautifulSoup
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from requirements_extractor import classify_page, extract_requirements
-from unsw_scraper import _slugify, build_sub_rows, detect_bundle, OUTPUT_FIELDNAMES
+from scholarship_common import (
+    OUTPUT_FIELDNAMES,
+    build_sub_rows,
+    detect_bundle as detect_bundle_with_regex,
+)
 
 SOURCE_ID = "b5e8c3a1-7d4f-4e2a-9b1c-6f3a8d5b2c7e"
 SOURCE_SLUG = "usyd-official"
@@ -421,7 +431,12 @@ def scrape_scholarship(listing: dict) -> dict | None:
     )
     # Regex audit fallback (USyd's AWARD_CODE_RE matches nothing, so this only
     # fires the phrase signal — useful for offline fallback when the API fails).
-    regex_reason = detect_bundle({}, background + " " + benefits, eligibility, how_to_apply)
+    regex_reason = detect_bundle_with_regex(
+        AWARD_CODE_RE,
+        background + " " + benefits,
+        eligibility,
+        how_to_apply,
+    )
 
     if classification is None:
         is_bundle = bool(regex_reason)
@@ -475,9 +490,9 @@ def main():
     bundles_path = f"{output_dir}/usyd_bundled_pages.csv"
 
     # CLI args:
-    #   python3 usyd_scraper.py            -> full run, resuming from existing CSV
-    #   python3 usyd_scraper.py 5          -> sample run (first 5), fresh start
-    #   python3 usyd_scraper.py --restart  -> fresh full run, ignore existing CSV
+    #   python3 usyd/usyd_scraper.py            -> full run, resuming from existing CSV
+    #   python3 usyd/usyd_scraper.py 5          -> sample run (first 5), fresh start
+    #   python3 usyd/usyd_scraper.py --restart  -> fresh full run, ignore existing CSV
     import sys
     args = sys.argv[1:]
     restart = "--restart" in args

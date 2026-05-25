@@ -10,8 +10,8 @@ but uses the existing USyd scrape as the baseline:
 - comparison: prints agreement stats and writes a disagreement CSV
 
 Typical use:
-    python3 verify_usyd_international.py
-    python3 verify_usyd_international.py --llm
+    python3 usyd/verify_usyd_international.py
+    python3 usyd/verify_usyd_international.py --llm
 """
 from __future__ import annotations
 
@@ -21,6 +21,12 @@ import json
 import sys
 import time
 from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+UNSW_DIR = REPO_ROOT / "unsw"
+for path in (REPO_ROOT, UNSW_DIR):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
 
 from verify_international import (
     _cache_key,

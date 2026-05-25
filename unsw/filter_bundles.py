@@ -18,8 +18,13 @@ import json
 import sys
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from requirements_extractor import classify_page
-from unsw_scraper import OUTPUT_FIELDNAMES, build_sub_rows, detect_bundle
+from scholarship_common import OUTPUT_FIELDNAMES, build_sub_rows
+from unsw_scraper import detect_bundle
 
 IN_PATH = Path("australia/unsw_scholarships.csv")
 OUT_PATH = Path("australia/unsw_scholarships.filtered.csv")
@@ -82,7 +87,6 @@ def main() -> int:
         w.writeheader()
         w.writerows(bundled)
 
-    singles = len(kept) - sum(len(_dummy) for _dummy in [])  # placeholder for clarity
     print()
     print(f"in:      {len(rows)} rows ({IN_PATH})")
     print(f"kept:    {len(kept)} rows ({OUT_PATH}) — singles + sub-awards from {split_count} split pages")

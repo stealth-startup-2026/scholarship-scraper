@@ -7,14 +7,26 @@ https://www.scholarships.unsw.edu.au/scholarships/search
 import csv
 import json
 import re
+import sys
 import time
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
 import requests
 from bs4 import BeautifulSoup
 
-from requirements_extractor import classify_page, extract_requirements, split_bundle
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from requirements_extractor import classify_page, extract_requirements
+from scholarship_common import (
+    OUTPUT_FIELDNAMES,
+    build_sub_rows,
+    detect_bundle as detect_bundle_with_regex,
+    slugify,
+)
 
 SOURCE_ID = "c2d4e6f8-1a3b-5c7d-9e0f-2b4c6d8e0f1a"
 BASE_URL = "https://www.scholarships.unsw.edu.au"
@@ -35,20 +47,6 @@ SESSION.headers.update({
     "User-Agent": "Mozilla/5.0 (compatible; ScholarshipScraper/1.0)",
     "Accept": "text/html,application/xhtml+xml",
 })
-
-OUTPUT_FIELDNAMES = [
-    "id", "source_id", "external_id", "external_url", "slug", "title",
-    "provider_name", "description", "amount_value", "amount_currency",
-    "amount_display", "awards_count", "frequency", "study_level",
-    "funding_type", "citizenships", "eligible_countries", "excluded_countries",
-    "eligible_genders", "minimum_gpa", "requires_essay", "need_based",
-    "merit_based", "school_name", "country", "state_region",
-    "application_open_at", "deadline_at", "start_term", "is_recurring",
-    "is_active", "is_featured", "last_verified_at", "source_last_synced_at",
-    "tags", "eligibility_summary", "application_requirements", "contact_info",
-    "raw_payload", "created_at", "updated_at",
-]
-
 
 def parse_date(raw: str) -> str | None:
     if not raw:
@@ -222,58 +220,14 @@ def parse_header_block(soup: BeautifulSoup) -> dict:
     return fields
 
 
-# Phrases that strongly indicate a page lists multiple sub-awards. We require
-# the keyword to sit adjacent to "scholarships/awards/external" so generic
-# wording ("you'll be considered for the scholarship") doesn't trigger.
-BUNDLE_PHRASE_RE = re.compile(
-    r'(?:the\s+following|the\s+below|a\s+number\s+of|wide\s+range\s+of|several|various)\s+'
-    r'(?:scholarships|awards|external\s+scholarships)',
-    re.IGNORECASE,
-)
-
-
 def _slugify(s: str) -> str:
-    s = re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
-    return s[:80]
+    """Backward-compatible alias for older helper scripts."""
+    return slugify(s)
 
 
 def detect_bundle(hf: dict, outline: str, eligibility: str, selection: str) -> str | None:
-    """
-    Return a reason string if this page bundles multiple distinct awards, else
-    None. Signals are structural where possible (counts of codes / amounts) and
-    fall back to a tight list of phrasings only when structure isn't enough.
-
-    Scans outline + eligibility + selection together because UNSW pages put the
-    sub-award table in different sections depending on the template — eligibility
-    alone misses pages like "UNSW Sport Scholarships" or "Nuclear Engineering
-    Awards Program" where the bundle markup lives in outline.
-    """
-    text = " ".join(filter(None, [outline, eligibility, selection]))
-    if not text:
-        return None
-
-    # Signal 1 — ≥2 distinct UNSW award codes anywhere on the page.
-    # AWARD_CODE_RE only matches UG/PG/PU prefixes, so course codes (LAWS3361
-    # etc.) can't trigger this. Two real award codes = a real bundle.
-    codes = set(AWARD_CODE_RE.findall(text))
-    if len(codes) >= 2:
-        return f"multiple award codes: {sorted(codes)}"
-
-    # Signal 2 — ≥3 distinct dollar amounts. Threshold is 3 (not 2) because a
-    # single scholarship legitimately quotes a principal + stipend or "up to
-    # $X / $Y" range. Three distinct amounts almost always means three awards.
-    amounts = set(re.findall(r'\$[0-9][0-9,]*', text))
-    if len(amounts) >= 3:
-        return f"multiple distinct amounts: {sorted(amounts)}"
-
-    # Signal 3 — explicit "list of awards" prose. The regex requires the
-    # keyword to sit next to scholarships/awards/external so bare "considered
-    # for the" (common on single-award pages) doesn't fire.
-    phrase = BUNDLE_PHRASE_RE.search(text)
-    if phrase:
-        return f"list-of-awards phrase: '{phrase.group(0)}'"
-
-    return None
+    """UNSW regex-audit wrapper using the UNSW award-code format."""
+    return detect_bundle_with_regex(AWARD_CODE_RE, outline, eligibility, selection)
 
 
 def scrape_scholarship(url: str) -> dict | None:
@@ -438,62 +392,6 @@ def scrape_scholarship(url: str) -> dict | None:
 
     print(f"  SPLIT ({decision_source} → {len(sub_rows)} sub-awards): {decision_reason}")
     return {"_sub_awards": sub_rows, "url": full_url, "parent_title": title}
-
-
-def build_sub_rows(
-    parent_row: dict,
-    title: str,
-    outline: str,
-    eligibility: str,
-    selection: str,
-) -> list[dict] | None:
-    """
-    Given a built parent row + the page's section texts, call the LLM splitter
-    and return a list of sub-award rows derived from `parent_row`. Returns None
-    when the splitter can't find any sub-awards (aggregator pages, API failure).
-    Each sub-row inherits provider/country/term/etc. from the parent and
-    overrides id, external_id, external_url, slug, title, amount, eligibility
-    bullets, and application_requirements.
-    """
-    split = split_bundle(title, outline, eligibility, selection)
-    sub_awards = (split or {}).get("sub_awards") or []
-    if not sub_awards:
-        return None
-
-    application_mode = (split or {}).get("application_mode", "automatic")
-    sep_required = (split or {}).get("separate_application_required", False)
-    full_url = parent_row.get("external_url", "")
-
-    sub_rows: list[dict] = []
-    for i, sa in enumerate(sub_awards):
-        code = (sa.get("code") or "").strip() or None
-        sub_title = (sa.get("title") or title).strip()
-        must_meet = [m.strip() for m in (sa.get("must_meet") or []) if m and m.strip()]
-
-        row = dict(parent_row)
-        row["id"] = str(uuid.uuid4())
-        row["external_id"] = code or f"{parent_row['external_id']}-{i + 1}"
-        row["external_url"] = f"{full_url}#{code or i + 1}"
-        row["slug"] = _slugify(sub_title) or f"{parent_row['slug']}-{i + 1}"
-        row["title"] = sub_title
-        if sa.get("amount_value") is not None:
-            try:
-                row["amount_value"] = float(sa["amount_value"])
-            except (TypeError, ValueError):
-                pass
-        if sa.get("amount_display"):
-            row["amount_display"] = sa["amount_display"]
-        row["eligibility_summary"] = "\n".join(must_meet) if must_meet else None
-        row["application_requirements"] = json.dumps({
-            "application_mode": application_mode,
-            "separate_application_required": sep_required,
-            "must_meet": must_meet,
-            "parent_url": full_url,
-            "parent_title": title,
-        })
-        sub_rows.append(row)
-
-    return sub_rows
 
 
 def get_scholarship_urls() -> list:

@@ -27,10 +27,14 @@ from pathlib import Path
 
 import anthropic
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 # Reuse env loading + endpoint config from the extractor module.
 from requirements_extractor import API_KEY, BASE_URL, MODEL  # noqa: F401
 
-CACHE_DIR = Path(__file__).parent / "australia" / "cache" / "international"
+CACHE_DIR = REPO_ROOT / "australia" / "cache" / "international"
 
 SYSTEM_PROMPT = (
     "You classify whether a scholarship is open to international students "

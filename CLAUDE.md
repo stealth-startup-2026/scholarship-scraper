@@ -206,16 +206,16 @@ Empty `sub_awards` means the page is an aggregator (Graduate Women style — onl
 
 ### What to do with the bundled-pages log
 
-`unsw_scraper.py` writes skipped bundles to `australia/unsw_bundled_pages.csv`. Treat that file as a backlog:
+`unsw/unsw_scraper.py` writes skipped bundles to `australia/unsw_bundled_pages.csv`. Treat that file as a backlog:
 - For pages worth importing as multiple rows, write a per-site splitter that fetches each URL, chunks the eligibility text on the `Title (CODE)` pattern, and emits N rows.
 - For pages not worth splitting (informational hubs, no funded sub-awards), leave them skipped.
 
 ### Re-applying detection + splitting after a scrape has already run
 
-If you tighten `detect_bundle()` or improve `split_bundle()` after a full scrape and don't want to re-fetch every page, use `filter_bundles.py`:
+If you tighten `detect_bundle()` or improve `split_bundle()` after a full scrape and don't want to re-fetch every page, use `unsw/filter_bundles.py`:
 
 ```sh
-python3 filter_bundles.py
+python3 unsw/filter_bundles.py
 # Reads:  australia/unsw_scholarships.csv
 # Writes: australia/unsw_scholarships.filtered.csv      ← singles + sub-awards
 #         australia/unsw_bundled_pages.filtered.csv     ← unsplittable aggregators
@@ -243,7 +243,7 @@ All three use:
 
 ### Env vars
 
-The scraper auto-loads a `.env` file next to `unsw_scraper.py`. Put the key there once, no need to `source` it before each run:
+The extractor auto-loads a `.env` file from the repo root. Put the key there once, no need to `source` it before each run:
 
 ```sh
 # .env (gitignored)
@@ -308,7 +308,7 @@ Pick a spread of pages: an undergrad cash award, a postgrad coursework, an excha
 
 ### 2. Define `AWARD_CODE_RE`
 
-Per `unsw_scraper.py:24`, declare a module-level constant matching only this uni's award codes — never a generic `[A-Z]{2,}\d+`. Make the regex tight enough to reject faculty/course codes mentioned in eligibility prose.
+Per `unsw/unsw_scraper.py`, declare a module-level constant matching only this uni's award codes — never a generic `[A-Z]{2,}\d+`. Make the regex tight enough to reject faculty/course codes mentioned in eligibility prose.
 
 ```python
 # unsw_scraper.py
@@ -334,7 +334,7 @@ Many real scholarship pages don't carry a uni-style award code (especially when 
 
 The primary bundle detector is `requirements_extractor.classify_page()` — call it on every page. The regex `detect_bundle()` is uni-specific (depends on `AWARD_CODE_RE`) and runs alongside as an offline fallback when the API is unavailable plus an audit signal for spotting regressions.
 
-For bundled pages, prefer **splitting** over skipping. Reuse `build_sub_rows(parent_row, title, outline, eligibility, selection)` from `unsw_scraper.py` — it calls `requirements_extractor.split_bundle()` and emits one row per sub-award, inheriting provider/country/term from the parent and overriding the per-sub-award fields. Pages that the splitter can't enumerate (true aggregator pages that only link out) still go to `australia/<uni>_bundled_pages.csv` as a backlog.
+For bundled pages, prefer **splitting** over skipping. Reuse `build_sub_rows(parent_row, title, outline, eligibility, selection)` from `scholarship_common.py` — it calls `requirements_extractor.split_bundle()` and emits one row per sub-award, inheriting provider/country/term from the parent and overriding the per-sub-award fields. Pages that the splitter can't enumerate (true aggregator pages that only link out) still go to `australia/<uni>_bundled_pages.csv` as a backlog.
 
 The full scrape-time flow for each page:
 
@@ -353,7 +353,7 @@ sub_rows = build_sub_rows(parent_row, title, outline, eligibility, selection)
 return sub_rows if sub_rows else {"_skipped": True, ...}
 ```
 
-See `unsw_scraper.py:scrape_scholarship` for the exact pattern.
+See `unsw/unsw_scraper.py:scrape_scholarship` for the exact pattern.
 
 ### 5. Wire up the LLM extractor
 
@@ -406,8 +406,8 @@ If those check out, run the full scrape.
 The scraper's `infer_citizenships()` heuristic catches ~15% of internationally-eligible scholarships in practice. Run the DeepSeek verification + SQL update pass to fix the rest:
 
 ```sh
-python3 verify_international.py --csv australia/<uni>/<uni>_scholarships.csv
-python3 gen_citizenships_update_sql.py \
+python3 unsw/verify_international.py --csv australia/<uni>/<uni>_scholarships.csv
+python3 unsw/gen_citizenships_update_sql.py \
   --csv australia/<uni>/deepseek_international_eligibility.csv \
   --domestic-code <COUNTRY_CODE>  # AU / UK / US / etc.
 # Then run the generated SQL in Supabase.
@@ -524,22 +524,22 @@ Three scripts in repo root cover the workflow:
 
 | Script | What |
 |---|---|
-| `verify_international.py` | Reads the scraper CSV, sends each row's `raw_payload.residency / criteria / eligibility / outline / selection` to DeepSeek with a single binary tool, writes `<uni>_deepseek_international_eligibility.csv` + a `_reasons.csv` debug log. Results are SHA-256 cached on disk so re-runs are free. |
-| `compare_international.py` | Diffs DeepSeek's verdict CSV against a manual baseline (Codex / human review). Computes precision/recall/F1 and lists per-row disagreements with DeepSeek's reasoning so you can spot-check. Optional — only useful when you have a baseline. |
-| `gen_citizenships_update_sql.py` | Generates an idempotent `UPDATE` SQL from the DeepSeek verdict CSV. **Two-statement output**: (1) toggles `'INTERNATIONAL'` in `citizenships` per the verdict, (2) stamps the domestic country code on any remaining empty rows so they don't accidentally match the International filter on the frontend. |
+| `unsw/verify_international.py` | Reads the scraper CSV, sends each row's `raw_payload.residency / criteria / eligibility / outline / selection` to DeepSeek with a single binary tool, writes `<uni>_deepseek_international_eligibility.csv` + a `_reasons.csv` debug log. Results are SHA-256 cached on disk so re-runs are free. |
+| `unsw/compare_international.py` | Diffs DeepSeek's verdict CSV against a manual baseline (Codex / human review). Computes precision/recall/F1 and lists per-row disagreements with DeepSeek's reasoning so you can spot-check. Optional — only useful when you have a baseline. |
+| `unsw/gen_citizenships_update_sql.py` | Generates an idempotent `UPDATE` SQL from the DeepSeek verdict CSV. **Two-statement output**: (1) toggles `'INTERNATIONAL'` in `citizenships` per the verdict, (2) stamps the domestic country code on any remaining empty rows so they don't accidentally match the International filter on the frontend. |
 
 ### Workflow
 
 ```sh
 # 1. Run DeepSeek over the scraped rows (~30-60s for ~150 rows)
-python3 verify_international.py --csv australia/usyd/usyd_scholarships.csv
+python3 unsw/verify_international.py --csv australia/usyd/usyd_scholarships.csv
 
 # 2. (Optional) compare against a human baseline if you have one
-python3 compare_international.py  # currently hardcoded for UNSW + Codex
+python3 unsw/compare_international.py  # currently hardcoded for UNSW + Codex
 
 # 3. Generate the SQL update. --domestic-code is the school's country
 #    code (AU for Australian unis, UK for British, US for American, etc.)
-python3 gen_citizenships_update_sql.py \
+python3 unsw/gen_citizenships_update_sql.py \
   --csv australia/usyd/deepseek_international_eligibility.csv \
   --domestic-code AU
 # → writes australia/usyd/update_citizenships.sql
@@ -581,7 +581,7 @@ where v.id = s.id and not v.is_international and s.citizenships = '[]'::jsonb;
 
 The `citizenships` column was originally declared as `text[]` in the migration, but when Supabase Table Editor imports a CSV with JSON-encoded array strings (`["AU"]`), it auto-detects and creates the column as **`jsonb`** instead. The generated SQL uses jsonb operators (`?`, `||`, `-`) accordingly.
 
-If you ever normalise to true `text[]`, the SQL generator needs `array` ops (`= any`, `array_append`, `array_remove`) — swap in `gen_citizenships_update_sql.py`'s template.
+If you ever normalise to true `text[]`, the SQL generator needs `array` ops (`= any`, `array_append`, `array_remove`) — swap in `unsw/gen_citizenships_update_sql.py`'s template.
 
 The frontend's `citizenshipsOf(s)` helper (`caat-frontend/app/(main)/scholarships/client.tsx`) reads both shapes correctly via Supabase JS — no client change needed.
 
