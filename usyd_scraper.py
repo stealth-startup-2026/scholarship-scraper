@@ -88,6 +88,69 @@ def _norm_heading(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
+_DATE_FORMATS = ("%d %B %Y", "%d %b %Y", "%B %d %Y", "%b %d %Y", "%Y-%m-%d")
+
+
+def parse_highlights_date(cell: str) -> str | None:
+    """Convert a Highlights-table date cell like '23 March 2026' or '14 Apr 2026'
+    to an ISO-8601 date string ('2026-03-23'). Returns None for non-dates
+    (e.g. 'Ongoing', 'TBA', empty cells)."""
+    if not cell:
+        return None
+    s = re.sub(r"\s+", " ", cell.strip())
+    if not s or s.lower() in {"tba", "ongoing", "n/a", "to be confirmed"}:
+        return None
+    from datetime import datetime
+    for fmt in _DATE_FORMATS:
+        try:
+            return datetime.strptime(s, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return None
+
+
+def parse_highlights_table(soup: BeautifulSoup) -> dict[str, str]:
+    """USyd scholarship pages often have a 'Highlights' table with columns
+    Value | Eligibility | Open date | Close date. The 'Value' cell is a clean,
+    card-friendly headline ('USYD RTP rate p.a. (up to 3.5 years)',
+    '$5,000 / year for one year') — much better than parsing the verbose
+    Benefits paragraph.
+
+    Returns {header_norm: cell_text} or {} when no table is found. Header keys
+    are lowercased & whitespace-normalised so callers can look up 'value',
+    'open date', etc. reliably.
+    """
+    for h in soup.find_all(["h2", "h3"]):
+        if _norm_heading(h.get_text(strip=True)) != _norm_heading("Highlights"):
+            continue
+        # Walk forward to the next table before the next heading.
+        for sib in h.find_all_next(["table", "h2", "h3"]):
+            if sib.name in ("h2", "h3") and sib is not h:
+                break
+            if sib.name == "table":
+                headers = [
+                    re.sub(r"\s+", " ", th.get_text(" ", strip=True)).lower()
+                    for th in sib.find_all("th")
+                ]
+                # Use the first data row only (USyd's Highlights table has one row).
+                first_tr = next(
+                    (tr for tr in sib.find_all("tr") if tr.find("td")), None,
+                )
+                if not first_tr or not headers:
+                    return {}
+                cells = [
+                    td.get_text(" ", strip=True) for td in first_tr.find_all("td")
+                ]
+                # Align by index, tolerating mismatched lengths.
+                return {
+                    headers[i]: cells[i]
+                    for i in range(min(len(headers), len(cells)))
+                    if cells[i]
+                }
+        break
+    return {}
+
+
 def get_section_text(soup: BeautifulSoup, headings: str | list[str]) -> str:
     """USyd uses h2/h3 section headings followed by paragraphs/lists. Accepts
     either a single heading or a list of acceptable variants — the first one
@@ -175,11 +238,39 @@ def infer_funding_type(benefits_text: str) -> list[str]:
     return types
 
 
+def _url_to_slug(url: str) -> str | None:
+    """Extract the slug from a USyd scholarship URL — matches the same logic
+    used to derive external_id during scraping."""
+    m = re.search(r"/scholarships/[a-z]/(.+?)\.html", url or "")
+    return m.group(1) if m else None
+
+
 def get_scholarship_listings() -> list[dict]:
-    """Fetch the AEM JSON feed; returns a list of {name, title, url, description, tags} dicts."""
+    """Fetch the AEM JSON feed; returns a list of {name, title, url, description, tags} dicts.
+
+    USyd indexes the same scholarship under multiple alphabetical directory
+    letters (e.g. /scholarships/a/clissold-scholarship.html AND
+    /scholarships/b/clissold-scholarship.html), which would produce duplicate
+    (source_id, external_id) rows and fail the Supabase unique constraint.
+    Dedupe by URL slug here so each scholarship gets scraped once."""
     resp = SESSION.get(SEARCH_DATA_URL, allow_redirects=True, timeout=30)
     resp.raise_for_status()
-    return resp.json()["scholarshipData"]
+    listings = resp.json()["scholarshipData"]
+    seen: set[str] = set()
+    deduped: list[dict] = []
+    for item in listings:
+        slug = _url_to_slug(item.get("url", ""))
+        if slug is None:
+            deduped.append(item)  # keep non-matching URLs as-is
+            continue
+        if slug in seen:
+            continue
+        seen.add(slug)
+        deduped.append(item)
+    dropped = len(listings) - len(deduped)
+    if dropped:
+        print(f"Deduplicated {dropped} listings sharing a slug (USyd multi-letter buckets)")
+    return deduped
 
 
 def scrape_scholarship(listing: dict) -> dict | None:
@@ -200,6 +291,7 @@ def scrape_scholarship(listing: dict) -> dict | None:
     title = h1.get_text(strip=True) if h1 else listing.get("title", "")
 
     highlights = get_section_text(soup, ["Highlights"])
+    highlights_table = parse_highlights_table(soup)
     how_to_apply = get_section_text(soup, ["How to apply", "Application"])
     benefits = get_section_text(soup, ["Benefits", "Benefits and duration", "Value", "Award value"])
     eligibility = get_section_text(soup, [
@@ -217,6 +309,16 @@ def scrape_scholarship(listing: dict) -> dict | None:
 
     td = tags_to_dict(listing.get("tags", []))
     amount_value, amount_display = parse_amount(benefits)
+    # Prefer the Highlights table's Value cell — it's the page's own card
+    # headline, already short and authoritative. Fall back to parse_amount on
+    # the Benefits paragraph only when the table is missing or has no Value.
+    table_value = highlights_table.get("value", "").strip()
+    if table_value:
+        amount_display = table_value
+        # Re-derive the numeric value from the table cell when possible.
+        m = re.search(r"\$([0-9][0-9,]*)", table_value)
+        if m:
+            amount_value = float(m.group(1).replace(",", ""))
     study_levels = infer_study_level(td)
     funding_type = infer_funding_type(benefits)
     citizenships = infer_citizenships(td)
@@ -242,6 +344,7 @@ def scrape_scholarship(listing: dict) -> dict | None:
 
     raw_payload = {
         "highlights": highlights,
+        "highlights_table": highlights_table,
         "how_to_apply": how_to_apply,
         "benefits": benefits,
         "eligibility": eligibility,
@@ -285,9 +388,13 @@ def scrape_scholarship(listing: dict) -> dict | None:
         "merit_based": merit_based,
         "school_name": "University of Sydney",
         "country": "Australia",
-        "state_region": "nsw",
-        "application_open_at": None,
-        "deadline_at": None,
+        # state_region encodes "scholarship restricted to this state", not
+        # "institution is in this state". Most USyd scholarships have no state
+        # restriction, so default to null. Set per-row only when eligibility
+        # text explicitly limits to a state.
+        "state_region": None,
+        "application_open_at": parse_highlights_date(highlights_table.get("open date", "")),
+        "deadline_at": parse_highlights_date(highlights_table.get("close date", "")),
         "start_term": None,
         "is_recurring": True,
         "is_active": True,

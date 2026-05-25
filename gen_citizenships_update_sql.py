@@ -42,11 +42,17 @@ def main() -> int:
         help="Code stamped on rows that DeepSeek says are NOT international but currently have empty citizenships. "
              "Use the school's country code (AU for UNSW/USyd, UK for Oxford, etc.). Default: AU",
     )
+    parser.add_argument(
+        "--verdict-label",
+        default="DeepSeek",
+        help="Human-readable source of the CSV verdicts used in SQL comments. Default: DeepSeek",
+    )
     args = parser.parse_args()
 
     input_path = args.csv
     output_path = args.out or input_path.parent / "update_citizenships.sql"
     domestic_code = args.domestic_code.upper()
+    verdict_label = args.verdict_label
 
     if not input_path.exists():
         print(f"missing: {input_path}", file=sys.stderr)
@@ -66,9 +72,9 @@ def main() -> int:
     values_block = ",\n".join(values_lines)
 
     sql = f"""-- Generated from {input_path}
--- Adds 'INTERNATIONAL' to citizenships for {intl_count} rows that DeepSeek
+-- Adds 'INTERNATIONAL' to citizenships for {intl_count} rows that {verdict_label}
 -- judged open to international students, and removes it from the other
--- {dom_count} rows. Then stamps '{domestic_code}' on any row DeepSeek said
+-- {dom_count} rows. Then stamps '{domestic_code}' on any row {verdict_label} said
 -- false that still has an empty citizenships array — so empty rows don't
 -- accidentally match the International filter on the frontend.
 -- Existing AU / AU-PR values are preserved.
@@ -78,7 +84,7 @@ def main() -> int:
 -- created as jsonb (values show as ["AU"], not {{AU}}). If your column is
 -- actually text[], swap to: 'X' = any(arr), array_append, array_remove.
 
--- Step 1 — toggle INTERNATIONAL based on DeepSeek's verdict.
+-- Step 1 — toggle INTERNATIONAL based on {verdict_label}'s verdict.
 with verdicts(id, is_international) as (
   values
 {values_block}
@@ -95,7 +101,7 @@ from verdicts v
 where v.id = s.id;
 
 -- Step 2 — empty arrays still match International on the frontend
--- (which treats [] as 'open to all'). Anything DeepSeek classified as
+-- (which treats [] as 'open to all'). Anything {verdict_label} classified as
 -- not-international AND that has no other code should be stamped with
 -- the school's country code so the filter behaves correctly.
 update public.scholarships s

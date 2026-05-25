@@ -5,6 +5,7 @@ __pycache__/
 australia/cache/
 australia/*.csv
 australia/**/*.csv
+australia/**/update_*.sql
 .env
 .env.*
 !.env.example
