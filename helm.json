@@ -1,0 +1,9 @@
+{
+  "displayName": "scholarship scraper",
+  "targets": [
+    { "id": "usyd", "label": "USyd", "workflowInput": "target" },
+    { "id": "unsw", "label": "UNSW", "workflowInput": "target" },
+    { "id": "all", "label": "All", "workflowInput": "target" }
+  ],
+  "secrets": ["DEEPSEEK_API_KEY"]
+}

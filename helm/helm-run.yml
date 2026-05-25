@@ -1,0 +1,32 @@
+name: helm run
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: which scraper to run
+        type: choice
+        options: [usyd, unsw, all]
+        default: all
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install deps
+        run: pip install -r requirements.txt || true
+      - name: run scraper
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          TARGET: ${{ inputs.target }}
+        run: |
+          if [ -x ./helm-run.sh ]; then ./helm-run.sh "$TARGET"; else echo "no helm-run.sh entrypoint"; exit 1; fi
+      - name: upload csv output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scraper-output
+          path: "**/*.csv"
+          if-no-files-found: ignore
