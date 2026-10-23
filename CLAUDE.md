@@ -34,6 +34,8 @@ last_verified_at, source_last_synced_at, tags, eligibility_summary,
 application_requirements, contact_info, raw_payload, created_at, updated_at
 ```
 
+`last_verified_at` is always empty in scraper output: only the CAAT refresh pipeline (`Caat_V2/scripts/refresh-scholarship-sources.mjs`) may set it. `source_last_synced_at` is the time that row's page was actually fetched.
+
 ### Field formatting rules
 
 | Type | Format | Example |
@@ -610,33 +612,68 @@ DeepSeek `deepseek-chat` at ~$0.27/M input tokens. ~1500 input tokens per call. 
 
 ## Re-imports and updates
 
-The dashboard CSV import does **not** upsert — re-running on the same data hits unique-constraint errors on `id` or `(source_id, external_id)`. Two paths:
+The dashboard CSV import does **not** upsert — re-running on the same data hits unique-constraint errors on `id` or `(source_id, external_id)`. Use the dashboard import only for a source's **first** load. Every later load is an upsert, written as SQL. **Upsert only.**
 
-### Path A: Delete + re-import (the simple case)
+### Never delete rows by source and re-import
 
-Use this when the new scrape changes shape (different `external_id` strategy, new columns, bundles filtered out at scrape time) and matching against existing rows by ID is unreliable.
+Do **not** run `DELETE FROM public.scholarships WHERE source_id = ...` (or delete its `scholarship_schools` rows) to "start clean" before a re-import. `public.user_bookmarked_scholarships` references `scholarships.id` with `ON DELETE CASCADE`, so deleting a scholarship silently wipes every student's saved copy of it, and the re-import mints new `id`s so the saves can never be reattached. The same delete also throws away the CAAT verification baselines and `last_verified_at` history.
+
+If a new scrape changes shape (different `external_id` strategy, bundles now split), map the old `external_id`s onto the new ones and upsert, or mark retired rows `is_active = false`. Never delete to make the import easier.
+
+### Upsert (the only re-import path)
+
+Don't use the dashboard UI — write `INSERT ... ON CONFLICT (source_id, external_id) DO UPDATE SET ...` SQL. The shape is in `caat-frontend/supabase/seeds/scholarships_unimelb.sql`. The `SET` list must follow these rules:
+
+- **Never include `last_verified_at`.** Only the CAAT refresh pipeline (`Caat_V2/scripts/refresh-scholarship-sources.mjs`) may set it, and only after a real fetch proves the page unchanged against its baseline. The scrapers now emit it empty; writing it on upsert would either fabricate a "verified" date or wipe the pipeline's real one.
+- **Always set `source_last_synced_at = EXCLUDED.source_last_synced_at`** — the scraper writes each page's actual fetch time there.
+- Never overwrite `id` or `created_at`, so existing rows (and everything that references them, like bookmarks) keep their identity.
 
 ```sql
--- 1. Clear junction rows first. Safe even if ON DELETE CASCADE is set —
---    just becomes a no-op. The junction-table FK definition has been
---    scrubbed from local migrations, so don't assume cascade.
-DELETE FROM public.scholarship_schools
-WHERE scholarship_id IN (
-  SELECT id FROM public.scholarships WHERE source_id = '<source_uuid>'
-);
-
--- 2. Clear scholarships
-DELETE FROM public.scholarships
-WHERE source_id = '<source_uuid>';
+INSERT INTO public.scholarships (<all CSV columns>)
+VALUES (...)
+ON CONFLICT (source_id, external_id) DO UPDATE SET
+  external_url             = EXCLUDED.external_url,
+  slug                     = EXCLUDED.slug,
+  title                    = EXCLUDED.title,
+  provider_name            = EXCLUDED.provider_name,
+  description              = EXCLUDED.description,
+  amount_value             = EXCLUDED.amount_value,
+  amount_currency          = EXCLUDED.amount_currency,
+  amount_display           = EXCLUDED.amount_display,
+  awards_count             = EXCLUDED.awards_count,
+  frequency                = EXCLUDED.frequency,
+  study_level              = EXCLUDED.study_level,
+  funding_type             = EXCLUDED.funding_type,
+  citizenships             = EXCLUDED.citizenships,
+  eligible_countries       = EXCLUDED.eligible_countries,
+  excluded_countries       = EXCLUDED.excluded_countries,
+  eligible_genders         = EXCLUDED.eligible_genders,
+  minimum_gpa              = EXCLUDED.minimum_gpa,
+  requires_essay           = EXCLUDED.requires_essay,
+  need_based               = EXCLUDED.need_based,
+  merit_based              = EXCLUDED.merit_based,
+  school_name              = EXCLUDED.school_name,
+  country                  = EXCLUDED.country,
+  state_region             = EXCLUDED.state_region,
+  application_open_at      = EXCLUDED.application_open_at,
+  deadline_at              = EXCLUDED.deadline_at,
+  start_term               = EXCLUDED.start_term,
+  is_recurring             = EXCLUDED.is_recurring,
+  is_active                = EXCLUDED.is_active,
+  is_featured              = EXCLUDED.is_featured,
+  source_last_synced_at    = EXCLUDED.source_last_synced_at,
+  tags                     = EXCLUDED.tags,
+  eligibility_summary      = EXCLUDED.eligibility_summary,
+  application_requirements = EXCLUDED.application_requirements,
+  contact_info             = EXCLUDED.contact_info,
+  raw_payload              = EXCLUDED.raw_payload,
+  updated_at               = now();
+  -- NOT in this list, ever: id, created_at, last_verified_at.
 ```
 
-Then re-run the import workflow (Steps 3 → 5). The LLM-extraction on-disk cache (`australia/cache/extraction/`) survives the DB delete, so re-scraping is fast and ~free.
+After the upsert, re-run Step 5 (school linkage) — its inserts are `ON CONFLICT DO NOTHING`, so they only add links for new rows.
 
-### Path B: Upsert (incremental updates)
-
-Use this when you want to preserve existing IDs (e.g. user bookmarks, foreign keys from other tables) and only change rows that meaningfully changed. Don't use the dashboard UI — write `INSERT ... ON CONFLICT (source_id, external_id) DO UPDATE SET ...` SQL. The shape is in `caat-frontend/supabase/seeds/scholarships_unimelb.sql`.
-
-### Verification queries after re-import
+### Verification queries after an upsert
 
 ```sql
 -- No bundled pages should remain (UNSW-specific regex; adapt per uni)
@@ -675,7 +712,7 @@ A working SQL-seed example for one scholarship lives at:
 It demonstrates:
 - Source upsert by slug
 - Resolving `school_id` via `ilike` lookup
-- Scholarship insert with `on conflict (source_id, external_id) do update`
+- Scholarship insert with `on conflict (source_id, external_id) do update` (when copying it, drop `last_verified_at` from the `set` list and set `source_last_synced_at = excluded.source_last_synced_at`; see "Re-imports and updates")
 - Junction table linkage in a single `do $$ ... $$` block
 
 Use this as the template if you need to generate SQL inserts (instead of CSV import) — necessary when:

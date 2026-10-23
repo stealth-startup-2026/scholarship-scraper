@@ -20,6 +20,9 @@ from typing import Pattern
 
 from requirements_extractor import split_bundle
 
+# Column order is the CSV contract with the import SQL; do not reorder.
+# last_verified_at stays in the shape but scrapers always leave it empty:
+# only the CAAT refresh pipeline may set it (PROD-151).
 OUTPUT_FIELDNAMES = [
     "id", "source_id", "external_id", "external_url", "slug", "title",
     "provider_name", "description", "amount_value", "amount_currency",
