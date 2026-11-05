@@ -33,6 +33,21 @@ Set `DEEPSEEK_API_KEY` in `.env` to enable LLM classification/extraction. Withou
 an API key, scrapers still run with regex fallback and leave some structured
 fields empty.
 
+## Offline checks
+
+Install the pinned test dependencies in a virtual environment, then run:
+
+```sh
+python -m pip install -r requirements-test.txt
+python -m unittest discover -s tests -v
+```
+
+The tests use synthetic pages and mocked HTTP/LLM helpers. They check the CSV
+column contract, per-page fetch timestamps, failed fetches, and bundle children.
+They require no API credentials and do not scrape or import production data.
+GitHub Actions runs the same checks on Python 3.12 and 3.14 for pull requests and
+pushes to `main`.
+
 ## Outputs
 
 - UNSW: `australia/unsw_scholarships.csv`

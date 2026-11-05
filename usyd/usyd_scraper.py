@@ -291,6 +291,8 @@ def scrape_scholarship(listing: dict) -> dict | None:
     try:
         resp = SESSION.get(url, timeout=30)
         resp.raise_for_status()
+        # Per-page fetch time, used for source_last_synced_at.
+        fetched_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f+00")
     except Exception as e:
         print(f"  HTTP error {url}: {e}")
         return None
@@ -409,8 +411,13 @@ def scrape_scholarship(listing: dict) -> dict | None:
         "is_recurring": True,
         "is_active": True,
         "is_featured": False,
-        "last_verified_at": NOW,
-        "source_last_synced_at": NOW,
+        # PROD-151: scrapers never stamp last_verified_at. Only the CAAT refresh
+        # pipeline (Caat_V2 scripts/refresh-scholarship-sources.mjs) may set it,
+        # after a real fetch proves the page unchanged against its baseline.
+        # The column stays in OUTPUT_FIELDNAMES so the CSV shape is unchanged.
+        "last_verified_at": "",
+        # When this page was actually fetched (not the run start).
+        "source_last_synced_at": fetched_at,
         "tags": json.dumps(tags_out),
         "eligibility_summary": eligibility or None,
         "application_requirements": json.dumps(application_requirements),
